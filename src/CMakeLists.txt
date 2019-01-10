@@ -2,7 +2,8 @@ set(ELACARRIER_DEPENDS
     libcrystal
     toxcore0
     libsodium
-    flatcc)
+    flatcc
+    cJSON)
 
 set(ELASESSION_DEPENDS
     libcrystal

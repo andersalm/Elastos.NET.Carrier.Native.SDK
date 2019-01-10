@@ -80,6 +80,7 @@
 #include "elacp.h"
 #include "dht.h"
 #include "tassemblies.h"
+#include "offline_msg.h"
 
 #define TURN_SERVER_PORT                ((uint16_t)3478)
 #define TURN_SERVER_USER_SUFFIX         "auth.tox"
@@ -1242,6 +1243,11 @@ void ela_kill(ElaCarrier *w)
         return;
     }
 
+    if (w->off_tok) {
+        offline_msg_recv_finish(w->off_tok);
+        w->off_tok = NULL;
+    }
+
     if (w->running) {
         w->quit = 1;
 
@@ -1494,70 +1500,114 @@ void notify_friend_request_cb(const uint8_t *public_key, const uint8_t* gretting
     elacp_free(cp);
 }
 
+static void process_friend_added_event(FriendEvent *event, ElaCarrier *w)
+{
+    FriendAddedEvent *ev = (FriendAddedEvent *)event;
+
+    if (w->callbacks.friend_added)
+        w->callbacks.friend_added(w, &ev->fi, w->context);
+}
+
 static void notify_friend_added(ElaCarrier *w, ElaFriendInfo *fi)
 {
-    FriendEvent *event;
+    FriendAddedEvent *event;
 
     assert(w);
     assert(fi);
 
     store_persistence_data(w);
 
-    event = (FriendEvent *)rc_alloc(sizeof(FriendEvent), NULL);
+    event = (FriendAddedEvent *)rc_alloc(sizeof(FriendAddedEvent), NULL);
     if (event) {
-        event->type = FriendEventType_Added;
         memcpy(&event->fi, fi, sizeof(*fi));
-
-        event->le.data = event;
-        list_push_tail(w->friend_events, &event->le);
+        event->base.le.data = event;
+        event->base.process = process_friend_added_event;
+        list_push_tail(w->friend_events, &event->base.le);
         deref(event);
     }
+}
+
+static void process_friend_removed_event(FriendEvent *event, ElaCarrier *w)
+{
+    FriendRemovedEvent *ev = (FriendRemovedEvent *)event;
+
+    if (ev->fi.status == ElaConnectionStatus_Connected &&
+        w->callbacks.friend_connection)
+        w->callbacks.friend_connection(w, ev->fi.user_info.userid,
+                                       ElaConnectionStatus_Disconnected,
+                                       w->context);
+
+    if (w->callbacks.friend_removed)
+        w->callbacks.friend_removed(w, ev->fi.user_info.userid, w->context);
 }
 
 static void notify_friend_removed(ElaCarrier *w, ElaFriendInfo *fi)
 {
-    FriendEvent *event;
+    FriendRemovedEvent *event;
 
     assert(w);
     assert(fi);
 
     store_persistence_data(w);
 
-    event = (FriendEvent *)rc_alloc(sizeof(FriendEvent), NULL);
+    event = (FriendRemovedEvent *)rc_alloc(sizeof(FriendRemovedEvent), NULL);
     if (event) {
-        event->type = FriendEventType_Removed;
         memcpy(&event->fi, fi, sizeof(*fi));
-
-        event->le.data = event;
-        list_push_tail(w->friend_events, &event->le);
+        event->base.le.data = event;
+        event->base.process = process_friend_removed_event;
+        list_push_tail(w->friend_events, &event->base.le);
         deref(event);
     }
 }
 
-static void do_friend_event(ElaCarrier *w, FriendEvent *event)
+static void process_friend_offline_msg_event(FriendEvent *event, ElaCarrier *w)
 {
+    FriendOffMsgEvent *ev = (FriendOffMsgEvent *)event;
+
+    ElaCP *cp;
+
+    cp = elacp_decode(ev->content, ev->len);
+    if (!cp) {
+        vlogE("Carrier: Invalid DHT message, dropped.");
+        return;
+    }
+
+    switch(elacp_get_type(cp)) {
+        case ELACP_TYPE_MESSAGE:
+            if (!elacp_get_extension(cp) &&
+                w->callbacks.friend_message &&
+                ela_is_friend(w, ev->from)) {
+                w->callbacks.friend_message(w, ev->from,
+                                            elacp_get_raw_data(cp),
+                                            elacp_get_raw_data_length(cp),
+                                            w->context);
+            }
+            break;
+        default:
+            vlogE("Carrier: Unknown DHT message, dropped.");
+            break;
+    }
+}
+
+static void notify_offline_msg(ElaCarrier *w, const char *from,
+                               const uint8_t *msg, size_t len)
+{
+    FriendOffMsgEvent *event;
+
     assert(w);
-    assert(event);
+    assert(from && *from);
+    assert(msg);
+    assert(len);
 
-    switch(event->type) {
-    case FriendEventType_Added:
-        if (w->callbacks.friend_added)
-            w->callbacks.friend_added(w, &event->fi, w->context);
-        break;
-
-    case FriendEventType_Removed:
-        if (event->fi.status == ElaConnectionStatus_Connected &&
-            w->callbacks.friend_connection)
-            w->callbacks.friend_connection(w, event->fi.user_info.userid,
-                                           ElaConnectionStatus_Disconnected,
-                                           w->context);
-
-        if (w->callbacks.friend_removed)
-            w->callbacks.friend_removed(w, event->fi.user_info.userid, w->context);
-        break;
-
-    default:
-        assert(0);
+    event = rc_zalloc(sizeof(FriendOffMsgEvent) + len, NULL);
+    if (event) {
+        strcpy(event->from, from);
+        memcpy(event->content, msg, len);
+        event->len = len;
+        event->base.le.data = event;
+        event->base.process = process_friend_offline_msg_event;
+        list_push_tail(w->friend_events, &event->base.le);
+        deref(event);
     }
 }
 
@@ -1579,7 +1629,7 @@ redo_events:
         if (rc == -1)
             goto redo_events;
 
-        do_friend_event(w, event);
+        event->process(event, w);
         list_iterator_remove(&it);
 
         deref(event);
@@ -2230,6 +2280,8 @@ int ela_run(ElaCarrier *w, int interval)
     w->running = 1;
 
     connect_to_bootstraps(w);
+
+    w->off_tok = offline_msg_recv(w, &notify_offline_msg);
 
     while(!w->quit) {
         int idle_interval;
@@ -2898,13 +2950,19 @@ int ela_send_friend_message(ElaCarrier *w, const char *to, const void *msg,
     }
 
     rc = dht_friend_message(&w->dht, friend_number, data, data_len);
-    free(data);
+    if (rc != ELA_DHT_ERROR(ELAERR_FRIEND_OFFLINE)) {
+        free(data);
 
-    if (rc < 0) {
-        ela_set_error(rc);
-        return -1;
+        if (rc < 0) {
+            ela_set_error(rc);
+            return -1;
+        }
+
+        return 0;
     }
 
+    offline_msg_send(w, to, data, data_len); //TODO
+    free(data);
     return 0;
 }
 

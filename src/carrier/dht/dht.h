@@ -54,6 +54,8 @@ uint32_t dht_self_get_nospam(DHT *dht);
 
 void dht_self_get_secret_key(DHT *dht, uint8_t *secret_key);
 
+void dht_self_get_public_key(DHT *dht, uint8_t *public_key);
+
 void dht_self_set_status(DHT *dht, int status);
 
 int dht_self_get_status(DHT *dht);

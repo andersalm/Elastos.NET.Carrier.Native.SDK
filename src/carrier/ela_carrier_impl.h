@@ -34,6 +34,8 @@
 #include "dht_callbacks.h"
 #include "dht.h"
 
+#include "offline_msg.h"
+
 #define MAX_IPV4_ADDRESS_LEN (15)
 #define MAX_IPV6_ADDRESS_LEN (47)
 
@@ -62,11 +64,28 @@ typedef enum FriendEventType {
     FriendEventType_Removed
 } FriendEventType;
 
-typedef struct FriendEvent {
+typedef struct FriendEvent FriendEvent;
+struct FriendEvent {
     list_entry_t le;
-    FriendEventType type;
+    void (*process)(FriendEvent *, ElaCarrier *);
+};
+
+typedef struct FriendAddedEvent {
+    FriendEvent base;
     ElaFriendInfo fi;
-} FriendEvent;
+} FriendAddedEvent;
+
+typedef struct FriendRemovedEvent {
+    FriendEvent base;
+    ElaFriendInfo fi;
+} FriendRemovedEvent;
+
+typedef struct FriendOffMsgEvent {
+    FriendEvent base;
+    char from[ELA_MAX_ID_LEN + 1];
+    size_t len;
+    uint8_t content[0];
+} FriendOffMsgEvent;
 
 struct ElaCarrier {
     pthread_mutex_t ext_mutex;
@@ -94,6 +113,8 @@ struct ElaCarrier {
 
     list_t *friend_events; // for friend_added/removed.
     hashtable_t *friends;
+
+    OffToken *off_tok;
 
     hashtable_t *tcallbacks;
     hashtable_t *thistory;

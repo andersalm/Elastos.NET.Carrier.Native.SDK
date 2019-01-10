@@ -13,6 +13,8 @@ add_submodule(pjsip
     DEPENDS platform-specific)
 add_submodule(CUnit
     DEPENDS platform-specific)
+add_submodule(cJSON
+    DEPENDS platform-specific)
 
 if(WIN32)
     add_submodule(PDCurses

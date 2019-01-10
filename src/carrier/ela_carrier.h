@@ -26,6 +26,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdarg.h>
+#include <stdlib.h>
 
 #if defined(__APPLE__)
 #pragma GCC diagnostic push

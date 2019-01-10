@@ -58,7 +58,9 @@ set(SRC
     dht/dht.c
     elacp.c
     ela_carrier.c
-    ela_error.c)
+    ela_error.c
+    offline_msg.c
+    dstore_stub.c)
 
 set(HEADERS
     ela_carrier.h)
@@ -101,7 +103,8 @@ endif()
 set(LIBS
     crystal
     toxcore
-    flatccrt)
+    flatccrt
+    cjson)
 
 if(WIN32)
     set(LIBS
