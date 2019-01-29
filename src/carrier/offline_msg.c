@@ -28,18 +28,22 @@
 #include <alloca.h>
 #endif
 #include <rc_mem.h>
+#include <DStoreC.h>
 
 #include "offline_msg.h"
 #include "dht.h"
 #include "ela_carrier.h"
 #include "ela_carrier_impl.h"
-#include "dstore_stub.h"
+
+#define DSTORE_SERVICE_PORT (9094)
 
 typedef struct OfflineMsgCtx {
     ElaCarrier *w;
     OfflineMsgOnRecvCb cb;
     const uint8_t *friend_public_key;
     uint8_t shared_key[SYMMETRIC_KEY_BYTES];
+    DStoreC *dstore;
+    pthread_t *worker_thread;
 } OfflineMsgCtx;
 
 static inline uint8_t *get_friend_public_key(const char *friendid,
@@ -59,7 +63,7 @@ static inline uint8_t *self_get_public_key(ElaCarrier *w, uint8_t *buf)
 }
 
 static void compute_keys(ElaCarrier *w, const uint8_t *friend_id_or_pk,
-                         bool is_send, uint8_t *shared_key, uint8_t *dstore_key)
+                         bool is_send, uint8_t *shared_key, char *dstore_key)
 {
     ssize_t len;
     uint8_t self_secret_key[SECRET_KEY_BYTES];
@@ -75,24 +79,23 @@ static void compute_keys(ElaCarrier *w, const uint8_t *friend_id_or_pk,
                  self_get_public_key(w, alloca(PUBLIC_KEY_BYTES));
     crypto_compute_symmetric_key(friend_public_key, self_secret_key, shared_key);
 
-    len = hmac_sha256(sha256_key, PUBLIC_KEY_BYTES,
-                      shared_key, SYMMETRIC_KEY_BYTES,
-                      dstore_key, SHA256_BYTES);
-    assert(len == SHA256_BYTES);
+    hmac_sha256a(sha256_key, PUBLIC_KEY_BYTES,
+                 shared_key, SYMMETRIC_KEY_BYTES,
+                 dstore_key, (SHA256_BYTES << 1) + 1);
 }
 
-static inline uint8_t *compute_nonce(const uint8_t *dstore_key)
+static inline uint8_t *compute_nonce(const char *dstore_key)
 {
     uint8_t offset;
 
-    offset = dstore_key[0] & (SHA256_BYTES - NONCE_BYTES - 1);
+    offset = dstore_key[0] % ((SHA256_BYTES << 1) - NONCE_BYTES + 1);
     return (uint8_t *)dstore_key + offset;
 }
 
-static inline int compute_dstore_value(const uint8_t *shared_key,
-                                       const uint8_t *dstore_key,
-                                       const uint8_t *plain, size_t len,
-                                       uint8_t *dstore_value)
+static inline ssize_t compute_dstore_value(const uint8_t *shared_key,
+                                           const char *dstore_key,
+                                           const uint8_t *plain, size_t len,
+                                           uint8_t *dstore_value)
 {
     const uint8_t *nonce;
 
@@ -100,10 +103,11 @@ static inline int compute_dstore_value(const uint8_t *shared_key,
     return crypto_encrypt(shared_key, nonce, plain, len, dstore_value);
 }
 
-int offline_msg_send(ElaCarrier *w, const char *to, const void *msg, size_t len)
+int offline_msg_send(OfflineMsgCtx *ctx, ElaCarrier *w, const char *to,
+                     const void *msg, size_t len)
 {
     uint8_t shared_key[SYMMETRIC_KEY_BYTES];
-    uint8_t dstore_key[SHA256_BYTES];
+    char dstore_key[(SHA256_BYTES << 1) + 1];
     uint8_t dstore_value[MAC_BYTES + len];
     ssize_t dstore_value_len;
 
@@ -115,11 +119,11 @@ int offline_msg_send(ElaCarrier *w, const char *to, const void *msg, size_t len)
         return ELA_GENERAL_ERROR(ELAERR_ENCRYPT);
     }
 
-    dstore_add_value(dstore_key, dstore_value, dstore_value_len); //TODO
+    dstore_add_value(ctx->dstore, dstore_key, dstore_value, dstore_value_len);
     return 0;
 }
 
-static bool get_offline_msg(const uint8_t *dstore_key, const void *buf,
+static bool get_offline_msg(const char *dstore_key, const uint8_t *buf,
                             size_t length, void *context)
 {
     OfflineMsgCtx *ctx = (OfflineMsgCtx *)context;
@@ -148,13 +152,13 @@ static bool check_friend_offline_msg(uint32_t friend_number,
                                      void *context)
 {
     OfflineMsgCtx *ctx = (OfflineMsgCtx *)context;
-    uint8_t dstore_key[SHA256_BYTES];
+    char dstore_key[(SHA256_BYTES << 1) + 1];
 
     ctx->friend_public_key = public_key;
 
     compute_keys(ctx->w, public_key, false, ctx->shared_key, dstore_key);
-    dstore_get_values(dstore_key, &get_offline_msg, ctx);
-    dstore_remove_values(dstore_key);
+    dstore_get_values(ctx->dstore, dstore_key, &get_offline_msg, ctx);
+    dstore_remove_values(ctx->dstore, dstore_key);
     return true;
 }
 
@@ -163,30 +167,60 @@ static void *__offline_msg_recv(void *arg)
     OfflineMsgCtx *ctx = (OfflineMsgCtx *)arg;
 
     dht_get_friends(&ctx->w->dht, check_friend_offline_msg, ctx);
-    deref(ctx);
     return NULL;
 }
 
-OffToken *offline_msg_recv(ElaCarrier *w, OfflineMsgOnRecvCb cb)
+static void OfflineMsgCtx_destroy(void *arg)
 {
-    pthread_t *pid = rc_alloc(sizeof(pthread_t), NULL);
-    if (!pid)
+    OfflineMsgCtx *ctx = (OfflineMsgCtx *)arg;
+
+    if (ctx->dstore)
+        dstore_destroy(ctx->dstore);
+    if (ctx->worker_thread) {
+        pthread_join(*ctx->worker_thread, NULL);
+        deref(ctx->worker_thread);
+    }
+}
+
+static OfflineMsgCtx *OfflineMsgCtx_create(ElaCarrier *w)
+{
+    OfflineMsgCtx *ctx = rc_zalloc(sizeof(OfflineMsgCtx), OfflineMsgCtx_destroy);
+    if (!ctx)
         return NULL;
 
-    OfflineMsgCtx *ctx = rc_zalloc(sizeof(OfflineMsgCtx), NULL);
+    /* ctx->dstore = dstore_create(ctx->w->pref.bootstraps[0].ipv4,
+                                DSTORE_SERVICE_PORT); */
+    ctx->dstore = dstore_create("149.28.244.92", DSTORE_SERVICE_PORT);
+    /* ctx->dstore = dstore_create("45.32.197.17",
+                                DSTORE_SERVICE_PORT); */
+    if (!ctx->dstore) {
+        deref(ctx);
+        return NULL;
+    }
+
+    ctx->worker_thread = rc_alloc(sizeof(pthread_t), NULL);
+    if (!ctx->worker_thread) {
+        deref(ctx);
+        return NULL;
+    }
+
+    return ctx;
+}
+
+OfflineMsgCtx *offline_msg_recv(ElaCarrier *w, OfflineMsgOnRecvCb cb)
+{
+    OfflineMsgCtx *ctx = OfflineMsgCtx_create(w);
     if (!ctx)
         return NULL;
 
     ctx->w = w;
     ctx->cb = cb;
 
-    pthread_create(pid, NULL, __offline_msg_recv, ctx);
-    return pid;
+    pthread_create(ctx->worker_thread, NULL, __offline_msg_recv, ctx);
+    return ctx;
 }
 
-void offline_msg_recv_finish(OffToken *off_tok)
+void offline_msg_recv_finish(OfflineMsgCtx *context)
 {
-    pthread_t *pid = (pthread_t *)off_tok;
-
-    pthread_join(*pid, NULL);
+    deref(context);
 }

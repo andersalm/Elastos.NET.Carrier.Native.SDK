@@ -27,13 +27,15 @@
 
 #include "ela_carrier.h"
 
-int offline_msg_send(ElaCarrier *w, const char *to, const void *msg, size_t len);
+typedef struct OfflineMsgCtx OfflineMsgCtx;
 
-typedef pthread_t OffToken;
+int offline_msg_send(OfflineMsgCtx *context, ElaCarrier *w, const char *to,
+                     const void *msg, size_t len);
+
 typedef void (*OfflineMsgOnRecvCb)(ElaCarrier *w, const char *from,
                                    const uint8_t *msg, size_t len);
-OffToken *offline_msg_recv(ElaCarrier *w, OfflineMsgOnRecvCb cb);
+OfflineMsgCtx *offline_msg_recv(ElaCarrier *w, OfflineMsgOnRecvCb cb);
 
-void offline_msg_recv_finish(OffToken *off_tok);
+void offline_msg_recv_finish(OfflineMsgCtx *context);
 
 #endif //__OFFLINE_MSG_H__

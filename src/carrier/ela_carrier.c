@@ -1243,9 +1243,9 @@ void ela_kill(ElaCarrier *w)
         return;
     }
 
-    if (w->off_tok) {
-        offline_msg_recv_finish(w->off_tok);
-        w->off_tok = NULL;
+    if (w->offline_msg_ctx) {
+        offline_msg_recv_finish(w->offline_msg_ctx);
+        w->offline_msg_ctx = NULL;
     }
 
     if (w->running) {
@@ -2281,7 +2281,7 @@ int ela_run(ElaCarrier *w, int interval)
 
     connect_to_bootstraps(w);
 
-    w->off_tok = offline_msg_recv(w, &notify_offline_msg);
+    w->offline_msg_ctx = offline_msg_recv(w, &notify_offline_msg);
 
     while(!w->quit) {
         int idle_interval;
@@ -2961,7 +2961,8 @@ int ela_send_friend_message(ElaCarrier *w, const char *to, const void *msg,
         return 0;
     }
 
-    offline_msg_send(w, to, data, data_len); //TODO
+    if (w->offline_msg_ctx)
+        offline_msg_send(w->offline_msg_ctx, w, to, data, data_len); //TODO
     free(data);
     return 0;
 }

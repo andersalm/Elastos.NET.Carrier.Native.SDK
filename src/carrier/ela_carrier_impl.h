@@ -114,7 +114,7 @@ struct ElaCarrier {
     list_t *friend_events; // for friend_added/removed.
     hashtable_t *friends;
 
-    OffToken *off_tok;
+    OfflineMsgCtx *offline_msg_ctx;
 
     hashtable_t *tcallbacks;
     hashtable_t *thistory;
