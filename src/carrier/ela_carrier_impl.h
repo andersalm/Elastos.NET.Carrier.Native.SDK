@@ -59,33 +59,23 @@ typedef struct Preferences {
     BootstrapNodeBuf *bootstraps;
 } Preferences;
 
-typedef enum FriendEventType {
-    FriendEventType_Added,
-    FriendEventType_Removed
-} FriendEventType;
-
-typedef struct FriendEvent FriendEvent;
-struct FriendEvent {
+typedef struct EventBase EventBase;
+struct EventBase {
+    void (*handle)(InternalEvent *, ElaCarrier *);
     list_entry_t le;
-    void (*process)(FriendEvent *, ElaCarrier *);
 };
 
-typedef struct FriendAddedEvent {
-    FriendEvent base;
+typedef struct FriendEvent {
+    EventBase base;
     ElaFriendInfo fi;
-} FriendAddedEvent;
+} FriendEvent;
 
-typedef struct FriendRemovedEvent {
-    FriendEvent base;
-    ElaFriendInfo fi;
-} FriendRemovedEvent;
-
-typedef struct FriendOffMsgEvent {
-    FriendEvent base;
+typedef struct OfflineMsgEvent {
+    EventBase base;
     char from[ELA_MAX_ID_LEN + 1];
     size_t len;
     uint8_t content[0];
-} FriendOffMsgEvent;
+} OfflineMsgEvent;
 
 struct ElaCarrier {
     pthread_mutex_t ext_mutex;
@@ -114,7 +104,7 @@ struct ElaCarrier {
     list_t *friend_events; // for friend_added/removed.
     hashtable_t *friends;
 
-    OfflineMsgCtx *offline_msg_ctx;
+    dstorectx_t *dstore;
 
     hashtable_t *tcallbacks;
     hashtable_t *thistory;

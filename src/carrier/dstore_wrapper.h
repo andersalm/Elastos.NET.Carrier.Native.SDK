@@ -19,23 +19,21 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
-#ifndef __OFFLINE_MSG_H__
-#define __OFFLINE_MSG_H__
+#ifndef __DSOTRE_WRAPPER_H__
+#define __DSOTRE_WRAPPER_H__
 
-#include <pthread.h>
 #include <stdlib.h>
 
-#include "ela_carrier.h"
+typedef struct ElaCarrier ElaCarrier;
+typedef struct DStoreWrapper DStoreWrapper;
 
-typedef struct OfflineMsgCtx OfflineMsgCtx;
+typedef void DStoreOnMsgCallback(DStoreWrapper *,
+                                 const char *from,
+                                 const uint8_t *message, size_t len);
 
-int offline_msg_send(OfflineMsgCtx *context, ElaCarrier *w, const char *to,
-                     const void *msg, size_t len);
+DStoreWrapper *dstore_create(ElaCarrier *w, DStoreOnMsgCallback *cb);
+void dstore_destroy(DStoreWrapper *ds;
 
-typedef void (*OfflineMsgOnRecvCb)(ElaCarrier *w, const char *from,
-                                   const uint8_t *msg, size_t len);
-OfflineMsgCtx *offline_msg_recv(ElaCarrier *w, OfflineMsgOnRecvCb cb);
+ssize_t dstore_send_msg(DStoreWrapper *, const char *to, const void *, size_t);
 
-void offline_msg_recv_finish(OfflineMsgCtx *context);
-
-#endif //__OFFLINE_MSG_H__
+#endif //__DSOTRE_WRAPPER_H__
