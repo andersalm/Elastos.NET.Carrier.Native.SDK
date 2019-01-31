@@ -1,5 +1,7 @@
 include(AddSubModule)
 
+find_package(CURL REQUIRED)
+
 set(DEPEND_MODULES
     libcrystal
     libconfig

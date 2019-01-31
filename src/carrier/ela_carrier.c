@@ -80,7 +80,7 @@
 #include "elacp.h"
 #include "dht.h"
 #include "tassemblies.h"
-#include "offline_msg.h"
+#include "dstore_wrapper.h"
 
 #define TURN_SERVER_PORT                ((uint16_t)3478)
 #define TURN_SERVER_USER_SUFFIX         "auth.tox"
@@ -1050,6 +1050,52 @@ static void ela_destroy(void *argv)
     dht_kill(&w->dht);
 }
 
+static void handle_offline_msg(EventBase *event, ElaCarrier *w)
+{
+    OfflineMsgEvent *ev = (OfflineMsgEvent *)event;
+
+    ElaCP *cp;
+
+    cp = elacp_decode(ev->content, ev->len);
+    if (!cp) {
+        vlogE("Carrier: Invalid DHT message, dropped.");
+        return;
+    }
+
+    if (elacp_get_type(cp) != ELACP_TYPE_MESSAGE) {
+        vlogE("Carrier: Unknown DHT message, dropped.");
+        return;
+    }
+
+    if (!elacp_get_extension(cp) && ela_is_friend(w, ev->from) &&
+        w->callbacks.friend_message)
+        w->callbacks.friend_message(w, ev->from, elacp_get_raw_data(cp),
+                                    elacp_get_raw_data_length(cp),
+                                    w->context);
+}
+
+static void notify_offline_msg(ElaCarrier *w, const char *from,
+                               const uint8_t *msg, size_t len)
+{
+    OfflineMsgEvent *event;
+
+    assert(w);
+    assert(from && *from);
+    assert(msg);
+    assert(len);
+
+    event = rc_zalloc(sizeof(OfflineMsgEvent) + len, NULL);
+    if (event) {
+        strcpy(event->from, from);
+        memcpy(event->content, msg, len);
+        event->len = len;
+        event->base.le.data = event;
+        event->base.handle = handle_offline_msg;
+        list_push_tail(w->friend_events, &event->base.le);
+        deref(event);
+    }
+}
+
 ElaCarrier *ela_new(const ElaOptions *opts, ElaCallbacks *callbacks,
                     void *context)
 {
@@ -1231,6 +1277,8 @@ ElaCarrier *ela_new(const ElaOptions *opts, ElaCallbacks *callbacks,
         w->context = context;
     }
 
+    w->dstorectx = dstore_wrapper_create(w, &notify_offline_msg);
+
     vlogI("Carrier: Carrier node created.");
 
     return w;
@@ -1244,7 +1292,7 @@ void ela_kill(ElaCarrier *w)
     }
 
     if (w->dstorectx) {
-        dstore_destroy(w->dstorectx);
+        dstore_wrapper_destroy(w->dstorectx);
         w->dstorectx = NULL;
     }
 
@@ -1500,7 +1548,7 @@ void notify_friend_request_cb(const uint8_t *public_key, const uint8_t* gretting
     elacp_free(cp);
 }
 
-static void handle_friend_added_event(FriendEvent *event, ElaCarrier *w)
+static void handle_friend_added_event(EventBase *event, ElaCarrier *w)
 {
     FriendEvent *ev = (FriendEvent *)event;
 
@@ -1527,7 +1575,7 @@ static void notify_friend_added(ElaCarrier *w, ElaFriendInfo *fi)
     }
 }
 
-static void handle_friend_removed_event(FriendEvent *event, ElaCarrier *w)
+static void handle_friend_removed_event(EventBase *event, ElaCarrier *w)
 {
     FriendEvent *ev = (FriendEvent *)event;
 
@@ -1554,53 +1602,7 @@ static void notify_friend_removed(ElaCarrier *w, ElaFriendInfo *fi)
     if (event) {
         memcpy(&event->fi, fi, sizeof(*fi));
         event->base.le.data = event;
-        event->base.handle = handle_friend_added_event;
-        list_push_tail(w->friend_events, &event->base.le);
-        deref(event);
-    }
-}
-
-static void handle_offline_msg(FriendEvent *event, ElaCarrier *w)
-{
-    OfflineMsgEvent *ev = (OfflineMsgEvent *)event;
-
-    ElaCP *cp;
-
-    cp = elacp_decode(ev->content, ev->len);
-    if (!cp) {
-        vlogE("Carrier: Invalid DHT message, dropped.");
-        return;
-    }
-
-    if (elacp_get_type(cp) != ELACP_TYPE_MESSAGE) {
-        vlogE("Carrier: Unknown DHT message, dropped.");
-        return;
-    }
-
-    if (!elacp_get_extension(cp) && ela_is_friend(w, ev->from) &&
-        w->callbacks.friend_message)
-        w->callbacks.friend_message(w, ev->from, elacp_get_raw_data(cp),
-                                    elacp_get_raw_data_length(cp),
-                                    w->context);
-}
-
-static void notify_offline_msg(ElaCarrier *w, const char *from,
-                               const uint8_t *msg, size_t len)
-{
-    FriendOffMsgEvent *event;
-
-    assert(w);
-    assert(from && *from);
-    assert(msg);
-    assert(len);
-
-    event = rc_zalloc(sizeof(FriendOffMsgEvent) + len, NULL);
-    if (event) {
-        strcpy(event->from, from);
-        memcpy(event->content, msg, len);
-        event->len = len;
-        event->base.le.data = event;
-        event->base.process = handle_offline_msg;
+        event->base.handle = handle_friend_removed_event;
         list_push_tail(w->friend_events, &event->base.le);
         deref(event);
     }
@@ -2276,8 +2278,6 @@ int ela_run(ElaCarrier *w, int interval)
 
     connect_to_bootstraps(w);
 
-    w->dstorectx = dstore_wrapper_create(w, &notify_offline_msg);
-
     while(!w->quit) {
         int idle_interval;
         struct timeval expire;
@@ -2945,20 +2945,21 @@ int ela_send_friend_message(ElaCarrier *w, const char *to, const void *msg,
     }
 
     rc = dht_friend_message(&w->dht, friend_number, data, data_len);
-    if (rc != ELA_DHT_ERROR(ELAERR_FRIEND_OFFLINE)) {
+    if (!rc) {
         free(data);
-
-        if (rc < 0) {
-            ela_set_error(rc);
-            return -1;
-        }
-
         return 0;
+    } else if (!w->dstorectx) {
+        free(data);
+        ela_set_error(rc);
+        return -1;
     }
 
-    if (w->offline_msg_ctx)
-        offline_msg_send(w->offline_msg_ctx, w, to, data, data_len); //TODO
+    ssize_t ret = dstore_send_msg(w->dstorectx, to, data, data_len);
     free(data);
+    if (ret < 0) {
+        ela_set_error(rc);
+        return -1;
+    }
     return 0;
 }
 

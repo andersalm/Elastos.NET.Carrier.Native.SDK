@@ -23,6 +23,8 @@
 #ifndef __DHT_WRAPPER_H__
 #define __DHT_WRAPPER_H__
 
+#include <stdbool.h>
+
 #define DHT_PUBLIC_KEY_SIZE     32U
 #define DHT_ADDRESS_SIZE        (32U + sizeof(uint32_t) + sizeof(uint16_t))
 #define DHT_GROUP_ID_SIZE       4U

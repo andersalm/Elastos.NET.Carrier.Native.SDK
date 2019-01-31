@@ -59,8 +59,7 @@ set(SRC
     elacp.c
     ela_carrier.c
     ela_error.c
-    offline_msg.c
-    dstore_stub.c)
+    dstore_wrapper.c)
 
 set(HEADERS
     ela_carrier.h)
@@ -104,7 +103,9 @@ set(LIBS
     crystal
     toxcore
     flatccrt
-    cjson)
+    hive-api
+    hive-api++
+    stdc++)
 
 if(WIN32)
     set(LIBS

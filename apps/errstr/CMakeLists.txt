@@ -23,7 +23,9 @@ link_directories(
 set(LIBS
     elacarrier
     elasession
-    crystal)
+    crystal
+    stdc++
+    ${CURL_LIBRARIES})
 
 if(WIN32)
     add_definitions(

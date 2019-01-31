@@ -84,8 +84,10 @@ set(LIBS
     elacarrier
     elasession
     crystal
+    stdc++
     pthread
-    config)
+    config
+    ${CURL_LIBRARIES})
 
 add_executable(elaspeedtest ${SRC})
 target_link_libraries(elaspeedtest ${LIBS} ${SYSTEM_LIBS})

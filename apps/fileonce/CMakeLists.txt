@@ -74,7 +74,9 @@ set(LIBS
     elacarrier
     elasession
     elafiletrans
-    crystal)
+    crystal
+    stdc++
+    ${CURL_LIBRARIES})
 
 if(WIN32)
     add_definitions(

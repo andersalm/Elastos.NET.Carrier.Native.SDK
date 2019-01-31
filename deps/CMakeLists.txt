@@ -13,7 +13,7 @@ add_submodule(pjsip
     DEPENDS platform-specific)
 add_submodule(CUnit
     DEPENDS platform-specific)
-add_submodule(cJSON
+add_submodule(Elastos.NET.Hive.Native.SDK
     DEPENDS platform-specific)
 
 if(WIN32)

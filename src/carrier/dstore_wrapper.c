@@ -27,21 +27,27 @@
 #ifdef HAVE_ALLOCA_H
 #include <alloca.h>
 #endif
+#ifdef HAVE_UNISTD_H
+#include <unistd.h>
+#endif
 #include <rc_mem.h>
-#include <DStoreC.h>
+#include <hive/c-api.h>
+#include <stdio.h>
+#include <limits.h>
 
 #include "dht.h"
-#include "dsotre_wrapper.h"
 #include "ela_carrier.h"
+#include "ela_carrier_impl.h"
+#include "dstore_wrapper.h"
 
 #define DSTORE_SERVICE_PORT (9094)
 
-typedef struct DStoreWrapper {
+struct DStoreWrapper {
     ElaCarrier *carrier;
     DStoreOnMsgCallback cb;
     pthread_t worker;
     DStoreC *dstore;
-} DStoreWrapper;
+};
 
 static inline uint8_t *compute_nonce(const char *dstore_key)
 {
@@ -51,15 +57,16 @@ static inline uint8_t *compute_nonce(const char *dstore_key)
     return (uint8_t *)dstore_key + offset;
 }
 
-size_t dstore_send_msg(DStoreWrapper *ctx, const char *friendid,
+ssize_t dstore_send_msg(DStoreWrapper *ctx, const char *friendid,
                       const void *msg, size_t length)
 {
     uint8_t self_sk[SECRET_KEY_BYTES];
     uint8_t self_pk[PUBLIC_KEY_BYTES];
     uint8_t peer_pk[PUBLIC_KEY_BYTES];
     uint8_t sharedkey[SYMMETRIC_KEY_BYTES];
-    uint8_t msgbody[MAC_BYTES + len];
+    uint8_t msgbody[MAC_BYTES + length];
     ssize_t size;
+    ssize_t len;
     uint8_t *nonce;
     char msgkey[(SHA256_BYTES << 1) + 1];
     char *key;
@@ -71,9 +78,9 @@ size_t dstore_send_msg(DStoreWrapper *ctx, const char *friendid,
         return ELA_GENERAL_ERROR(ELAERR_ENCRYPT);
     }
 
-    dht_self_get_secret_key(&w->dht, self_sk);
-    dht_self_get_public_key(&w->dht, self_pk);
-    crypto_compute_symmetric_key(self_sk, peer_pk, shared_key);
+    dht_self_get_secret_key(&ctx->carrier->dht, self_sk);
+    dht_self_get_public_key(&ctx->carrier->dht, self_pk);
+    crypto_compute_symmetric_key(peer_pk, self_sk, sharedkey);
 
     // Compute sending msgkey.
     // msgkey=SHA256<SYMMTRIC(self_sk, peer_pk), peer_pk>
@@ -85,14 +92,14 @@ size_t dstore_send_msg(DStoreWrapper *ctx, const char *friendid,
         return ELA_GENERAL_ERROR(ELAERR_INVALID_ARGS);
     }
 
-    nonce = compute_nonce(dstore_key);
-    size  = crypto_encrypt(shared_key, nonce, msg, lenth, msgbody);
+    nonce = compute_nonce(msgkey);
+    size  = crypto_encrypt(sharedkey, nonce, msg, length, msgbody);
     if (size < 0) {
         vlogE("Carrier: Encrypt offline message body error.");
         return ELA_GENERAL_ERROR(ELAERR_ENCRYPT);
     }
 
-    rc = dstore_add_value(ctx->dstore, msgkey, dstore_value, dstore_value_len);
+    rc = dstore_add_value(ctx->dstore, msgkey, msgbody, size);
     if (rc < 0) {
         vlogE("Carrier: Sending offline message <K,V> error.");
         return ELA_GENERAL_ERROR(ELAERR_BUSY);
@@ -103,27 +110,27 @@ size_t dstore_send_msg(DStoreWrapper *ctx, const char *friendid,
 
 static bool get_msg_body(const char *msg_key,
                          const uint8_t *buf, size_t length,
-                         void *context
+                         void *context)
 {
     DStoreWrapper *ctx = (DStoreWrapper *)((void **)context)[0];
     uint8_t *friendkey = (uint8_t *)((void **)context)[1];
-    uint8_t *sharekey  = (uint8_t *)((void **)context)[2];
+    uint8_t *sharedkey  = (uint8_t *)((void **)context)[2];
 
     uint8_t *msg = alloca(length - MAC_BYTES);
-    ssize_t size;
+    ssize_t len;
     const uint8_t *nonce;
     char friendid[ELA_MAX_ID_LEN + 1] = {0};
     size_t idlen = sizeof(friendid);
 
     nonce = compute_nonce(msg_key);
-    size  = crypto_decrypt(sharedkey, nonce, buf, length, msg);
+    len  = crypto_decrypt(sharedkey, nonce, buf, length, msg);
     if (len <= 0) {
         vlogE("Carrier: decrypt offline message body error.");
         return false;
     }
 
-    base58_encode(peer_key, DHT_PUBLIC_KEY_SIZE, friendid, &idlen);
-    ctx->cb(ctx, friendid, msg, len);
+    base58_encode(friendkey, DHT_PUBLIC_KEY_SIZE, friendid, &idlen);
+    ctx->cb(ctx->carrier, friendid, msg, len);
     return true;
 }
 
@@ -142,8 +149,8 @@ static bool check_offline_msg_cb(uint32_t friend_number,
     char msgkey[(SHA256_BYTES << 1) + 1];
     char *key;
     void *argv[] = {
-        ctxt,
-        friend_pk,
+        ctx,
+        (void *)friend_pk,
         sharedkey,
     };
 
@@ -153,10 +160,10 @@ static bool check_offline_msg_cb(uint32_t friend_number,
 
     dht_self_get_secret_key(&w->dht, self_sk);
     dht_self_get_public_key(&w->dht, self_pk);
-    crypto_compute_symmetric_key(self_sk, friend_pk, shared_key);
+    crypto_compute_symmetric_key(friend_pk, self_sk, sharedkey);
 
     // Compute receiving msgkey.
-    // msgkey=SHA256<SYMMTRIC(self_sk, peer_pk), self_pk>
+    // msgkey=SHA256<SYMMETRIC(self_sk, peer_pk), self_pk>
     key = hmac_sha256a(sharedkey, SYMMETRIC_KEY_BYTES,
                        self_pk, PUBLIC_KEY_BYTES,
                        msgkey, sizeof(msgkey));
@@ -172,10 +179,10 @@ static bool check_offline_msg_cb(uint32_t friend_number,
     return true;
 }
 
-static void * scrawl_offline_msg(void *arg)
+static void * crawl_offline_msg(void *arg)
 {
     DStoreWrapper *ctx = (DStoreWrapper *)arg;
-    dht_get_friends(&ctx->w->dht, check_friend_offline_msg_cb, ctx);
+    dht_get_friends(&ctx->carrier->dht, check_offline_msg_cb, ctx);
     return NULL;
 }
 
@@ -189,29 +196,61 @@ static void DStoreWrapperDestroy(void *arg)
     }
 }
 
-DStoreWrapper *dstore_wrapper_create(ElaCarrier *w, DStoreOnMsgCallback *cb)
+DStoreWrapper *dstore_wrapper_create(ElaCarrier *w, DStoreOnMsgCallback cb)
 {
     DStoreWrapper *ctx;
-
+    int rc;
+    char conf_cache[PATH_MAX];
 
     ctx = rc_zalloc(sizeof(DStoreWrapper), DStoreWrapperDestroy);
     if (!ctx)
         return NULL;
 
-    /* ctx->dstore = dstore_create(ctx->w->pref.bootstraps[0].ipv4,
-                                DSTORE_SERVICE_PORT);
-      ctx->dstore = dstore_create("45.32.197.17",
-                                DSTORE_SERVICE_PORT); */
-    ctx->dstore = dstore_create("149.28.244.92", DSTORE_SERVICE_PORT);
+    rc = snprintf(conf_cache, sizeof(conf_cache), "%s/dstore_cache.conf",
+                  w->pref.data_location);
+    if (rc >= sizeof(conf_cache)) {
+        deref(ctx);
+        return NULL;
+    }
+
+    if (access(conf_cache, F_OK)) {
+        FILE *fp = fopen(conf_cache, "w");
+        if (!fp) {
+            deref(ctx);
+            return NULL;
+        }
+
+        const char *conf_str = NULL;
+        for (int i = 0; i < w->pref.bootstraps_size && !conf_str; ++i) {
+            conf_str = hive_generate_conf(w->pref.bootstraps[i].ipv4,
+                                          DSTORE_SERVICE_PORT);
+        }
+        if (!conf_str) {
+            deref(ctx);
+            fclose(fp);
+            return NULL;
+        }
+
+        size_t nwr = fwrite(conf_str, strlen(conf_str), 1, fp);
+        fclose(fp);
+        free((void *)conf_str);
+        if (nwr != 1) {
+            remove(conf_cache);
+            deref(ctx);
+            return NULL;
+        }
+    }
+
+    ctx->dstore = dstore_create(conf_cache);
     if (!ctx->dstore) {
         deref(ctx);
         return NULL;
     }
 
     ctx->carrier = w;
-    ctx->cb = *cb;
+    ctx->cb = cb;
 
-    rc = pthread_create(&ctx->worker, NULL, scrawl_offline_msg, ctx);
+    rc = pthread_create(&ctx->worker, NULL, crawl_offline_msg, ctx);
     if (rc != 0) {
         deref(ctx);
         return NULL;

@@ -66,11 +66,15 @@ else()
     add_definitions(-DCRYSTAL_STATIC)
 endif()
 
+find_package(CURL REQUIRED)
+
 set(LIBS
     elacarrier
     elasession
     elafiletrans
     crystal
+    stdc++
+    ${CURL_LIBRARIES}
     )
 
 set(DEPS

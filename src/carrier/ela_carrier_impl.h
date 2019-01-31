@@ -34,7 +34,7 @@
 #include "dht_callbacks.h"
 #include "dht.h"
 
-#include "offline_msg.h"
+#include "dstore_wrapper.h"
 
 #define MAX_IPV4_ADDRESS_LEN (15)
 #define MAX_IPV6_ADDRESS_LEN (47)
@@ -61,7 +61,7 @@ typedef struct Preferences {
 
 typedef struct EventBase EventBase;
 struct EventBase {
-    void (*handle)(InternalEvent *, ElaCarrier *);
+    void (*handle)(EventBase *, ElaCarrier *);
     list_entry_t le;
 };
 
@@ -104,7 +104,7 @@ struct ElaCarrier {
     list_t *friend_events; // for friend_added/removed.
     hashtable_t *friends;
 
-    dstorectx_t *dstore;
+    DStoreWrapper *dstorectx;
 
     hashtable_t *tcallbacks;
     hashtable_t *thistory;

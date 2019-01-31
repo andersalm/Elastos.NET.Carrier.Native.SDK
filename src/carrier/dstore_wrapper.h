@@ -27,12 +27,12 @@
 typedef struct ElaCarrier ElaCarrier;
 typedef struct DStoreWrapper DStoreWrapper;
 
-typedef void DStoreOnMsgCallback(DStoreWrapper *,
-                                 const char *from,
-                                 const uint8_t *message, size_t len);
+typedef void (*DStoreOnMsgCallback)(ElaCarrier *carrier,
+                                    const char *from,
+                                    const uint8_t *message, size_t len);
 
-DStoreWrapper *dstore_create(ElaCarrier *w, DStoreOnMsgCallback *cb);
-void dstore_destroy(DStoreWrapper *ds;
+DStoreWrapper *dstore_wrapper_create(ElaCarrier *w, DStoreOnMsgCallback cb);
+void dstore_wrapper_destroy(DStoreWrapper *ds);
 
 ssize_t dstore_send_msg(DStoreWrapper *, const char *to, const void *, size_t);
 
