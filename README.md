@@ -254,7 +254,7 @@ Download this repository using Git:
 $ git clone https://github.com/elastos/Elastos.NET.Carrier.Native.SDK
 ```
 
-#### 3. Build to run on host (Raspberry Pi)
+#### 3. Build to run on host
 
 To compile the project from source code for the target to run on Raspberry Pi, carry out the following steps:
 
